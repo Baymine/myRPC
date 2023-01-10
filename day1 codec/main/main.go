@@ -23,10 +23,11 @@ func startServer(addr chan string) {
 }
 
 func main() {
+	log.SetFlags(0)           // 不加会阻塞
 	addr := make(chan string) // 从协程中获取地址信息
-	go startServer(addr)      // 子线程去处理连接
+	go startServer(addr)
 
-	conn, _ := net.Dial("tpc", <-addr)
+	conn, _ := net.Dial("tcp", <-addr)
 	defer func() {
 		_ = conn.Close()
 	}()

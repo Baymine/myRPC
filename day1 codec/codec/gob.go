@@ -24,7 +24,7 @@ type GobCodec struct {
 // 说明*GobCodec并没有实现Codec接口的所有方法
 var _ Codec = (*GobCodec)(nil)
 
-// NewGobCodec CobType下的构造函数的实现
+// CobType下的构造函数的实现
 func NewGobCodec(conn io.ReadWriteCloser) Codec {
 	buf := bufio.NewWriter(conn)
 	// 创建
@@ -38,23 +38,23 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 
 // GobCodec 实现接口Codec
 
-// ReadHeader 解码报头
+// 解码报头
 func (c *GobCodec) ReadHeader(h *Header) error {
 	return c.dec.Decode(h)
 }
 
-// ReadBody 解码主体
+// 解码主体
 func (c *GobCodec) ReadBody(body interface{}) error {
 	return c.dec.Decode(body)
 }
 
-// 编码报头和主体，然后放到GobCodec结构体中的缓存中（最后提交）
+// 编码报头和主体
 func (c *GobCodec) Write(h *Header, body interface{}) (err error) {
 	defer func() {
 		// bufio当缓存不足的时候，会将缓冲中的内容写入到文件中
 		// 所以在程序结束的时候，一部分数据可能还会在缓冲中，这时候就需要手动将
 		// 这些数据写入到文件中
-		_ = c.buf.Flush() // 将还在缓冲中的所有数据提交处理
+		_ = c.buf.Flush() // 将缓冲中的所有数据
 		if err != nil {
 			_ = c.Close()
 		}
