@@ -38,12 +38,12 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 
 // GobCodec 实现接口Codec
 
-// 解码报头
+// ReadHeader 解码报头
 func (c *GobCodec) ReadHeader(h *Header) error {
 	return c.dec.Decode(h)
 }
 
-// 解码主体
+// ReadBody 解码主体
 func (c *GobCodec) ReadBody(body interface{}) error {
 	return c.dec.Decode(body)
 }

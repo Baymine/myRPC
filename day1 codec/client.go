@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-// 一次RPC调用所需要的信息
+// Call 一次RPC调用所需要的信息
 type Call struct {
 	Seq           uint64
 	ServiceMethod string
@@ -26,19 +26,18 @@ func (call *Call) done() {
 	call.Done <- call
 }
 
-// client
 type Client struct {
 	cc      codec.Codec // 消息的编解码器
-	opt     *Option     //为了保证请求的有序发送，即防止出现多个请求报文混淆。
-	sending sync.Mutex
-	header  codec.Header
+	opt     *Option
+	sending sync.Mutex   //为了保证请求的有序发送，即防止出现多个请求报文混淆。
+	header  codec.Header // 发送请求的时候需要
 	mu      sync.Mutex
 	seq     uint64
 	pending map[uint64]*Call // 存储未处理完的请求，键是编号，值是 Call 实例
 
 	// closing 是用户主动关闭的，即调用 Close 方法，而 shutdown 置为 true 一般是有错误发生。
 	closing  bool // user has called Close
-	shutdown bool
+	shutdown bool // error occur
 }
 
 var _ io.Closer = (*Client)(nil)
@@ -94,7 +93,8 @@ func (client *Client) terminateCalls(err error) {
 	defer client.mu.Unlock()
 
 	client.shutdown = true
-	// 遍历等待列表中的所有的Call，逐个关闭
+
+	// 通知在队列中所有的Call，有错误发生
 	for _, call := range client.pending {
 		call.Error = err
 		call.done()
@@ -111,9 +111,9 @@ func (client *Client) receive() {
 		}
 		call := client.removeCall(h.Seq)
 		switch {
-		case call == nil: // call not exist
+		case call == nil: // call 被取消，但服务端仍旧处理了
 			err = client.cc.ReadBody(nil)
-		case h.Error != "": // server error
+		case h.Error != "": // 服务端处理出错
 			call.Error = fmt.Errorf(h.Error)
 			err = client.cc.ReadBody(nil)
 			call.done()
@@ -128,68 +128,7 @@ func (client *Client) receive() {
 	client.terminateCalls(err)
 }
 
-// 创建client实例
-func NewClient(conn net.Conn, opt *Option) (*Client, error) {
-	f := codec.NewCodecFuncMap[opt.CodecType]
-
-	if f == nil {
-		err := fmt.Errorf("invalid codec type %s", opt.CodecType)
-		log.Println("rpc client: codec error:", err)
-		return nil, err
-	}
-
-	if err := json.NewEncoder(conn).Encode(opt); err != nil {
-		log.Println("rpc client: options error: ", err)
-	}
-	return newClientCodec(f(conn), opt), nil
-}
-
-func newClientCodec(cc codec.Codec, opt *Option) *Client {
-	client := &Client{
-		seq:     1,
-		cc:      cc,
-		opt:     opt,
-		pending: make(map[uint64]*Call),
-	}
-	go client.receive()
-	return client
-}
-
-func parseOptions(opts ...*Option) (*Option, error) {
-	if len(opts) == 0 || opts[0] == nil {
-		return DefaultOption, nil
-	}
-
-	if len(opts) != 1 {
-		return nil, errors.New("number of option is more than one")
-	}
-	opt := opts[0]
-	opt.MagicNumber = DefaultOption.MagicNumber
-	if opt.CodecType == "" {
-		opt.CodecType = DefaultOption.CodecType
-	}
-	return opt, nil
-}
-
-func Dial(network, address string, opts ...*Option) (client *Client, err error) {
-	opt, err := parseOptions(opts...) // ... 意思是将opts中所有元素枚举之后作为参数传入
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-
-	defer func() {
-		if client == nil {
-			_ = conn.Close()
-		}
-	}()
-	return NewClient(conn, opt)
-}
-
-// 发送请求
+// 发送请求：注册，填充信息，调用写入函数
 func (client *Client) send(call *Call) {
 	client.sending.Lock() // 保证客户端发送一个完整的请求
 	defer client.sending.Unlock()
@@ -240,3 +179,68 @@ func (client *Client) Call(serviceMethod string, args, reply interface{}) error 
 	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 10)).Done
 	return call.Error
 }
+
+// NewClient 协商好编码信息
+func NewClient(conn net.Conn, opt *Option) (*Client, error) {
+	f := codec.NewCodecFuncMap[opt.CodecType]
+
+	if f == nil {
+		err := fmt.Errorf("invalid codec type %s", opt.CodecType)
+		log.Println("rpc client: codec error:", err)
+		return nil, err
+	}
+
+	if err := json.NewEncoder(conn).Encode(opt); err != nil {
+		log.Println("rpc client: options error: ", err)
+	}
+	return newClientCodec(f(conn), opt), nil
+}
+
+// 创建client实例，创建子协程调用receive接收响应
+func newClientCodec(cc codec.Codec, opt *Option) *Client {
+	client := &Client{
+		seq:     1,
+		cc:      cc,
+		opt:     opt,
+		pending: make(map[uint64]*Call),
+	}
+	go client.receive()
+	return client
+}
+
+func parseOptions(opts ...*Option) (*Option, error) {
+	if len(opts) == 0 || opts[0] == nil {
+		return DefaultOption, nil
+	}
+
+	if len(opts) != 1 {
+		return nil, errors.New("number of option is more than one")
+	}
+	opt := opts[0]
+	opt.MagicNumber = DefaultOption.MagicNumber
+	if opt.CodecType == "" {
+		opt.CodecType = DefaultOption.CodecType
+	}
+	return opt, nil
+}
+
+func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+	opt, err := parseOptions(opts...) // ... 意思是将opts中所有元素枚举之后作为参数传入
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if client == nil {
+			_ = conn.Close()
+		}
+	}()
+	return NewClient(conn, opt)
+}
+
+
