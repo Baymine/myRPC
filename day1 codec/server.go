@@ -2,13 +2,16 @@ package geerpc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"geerpc/codec"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
+	"time"
 )
 
 const MagicNumber = 0xbef5c
@@ -16,17 +19,24 @@ const MagicNumber = 0xbef5c
 // Option 对于 GeeRPC 来说，目前需要协商的唯一一项内容是消息的编解码方式
 type Option struct {
 	MagicNumber int        // MagicNumber marks this a geerpc request
-	CodecType   codec.Type // 编码方式
+	CodecType   codec.Type // 编码方式\
+
+	// 超时处理
+	ConnectTimeout time.Duration
+	HandleTimeout  time.Duration
 }
 
 // DefaultOption 为了实现上简单，Option采用JSON编码，后续的Header和body采用选择的编码方式
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.GobType,
+	MagicNumber:    MagicNumber,
+	CodecType:      codec.GobType,
+	ConnectTimeout: time.Second * 10, // 10s 的超时时间
 }
 
 // Server Represent an RPC server
-type Server struct{}
+type Server struct {
+	serviceMap sync.Map
+}
 
 func NewServer() *Server {
 	return &Server{} // 最后的{}标识对结构体的初始化
@@ -78,8 +88,8 @@ func (server *Server) serveCodec(cc codec.Codec) {
 			server.sendResponse(cc, req.h, invalidRequest, sending) // 回复请求
 			continue
 		}
-		wg.Add(1)                                     // 接收并处理请求
-		go server.handleRequest(cc, req, sending, wg) // 处理请求
+		wg.Add(1)                                         // 接收并处理请求
+		go server.handleRequest(cc, req, sending, wg, 10) // 处理请求
 	}
 	wg.Wait()
 	_ = cc.Close()
@@ -89,6 +99,8 @@ func (server *Server) serveCodec(cc codec.Codec) {
 type request struct {
 	h            *codec.Header // header of request
 	argv, replyv reflect.Value // argv and replyv of request
+	mtype        *methodType
+	svc          *service
 }
 
 // 返回解码后的报头信息
@@ -113,11 +125,25 @@ func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 	}
 
 	req := &request{h: h} // 结构体request的赋值
-	// TODO: just suppose it's string
-	req.argv = reflect.New(reflect.TypeOf(""))
+	// ------------------------todo--------------------------
+	//req.argv = reflect.New(reflect.TypeOf(""))
+	req.svc, req.mtype, err = server.findService(h.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+	// 构造两个入参实例
+	req.argv = req.mtype.newArgv()
+	req.replyv = req.mtype.newReplyv()
 
+	// make sure that argvi is a pointer, ReadBody need a pointer as parameter
+	argvi := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Ptr {
+		argvi = req.argv.Addr().Interface() // 先转换成指针
+	}
+	// ----------------------------------------------
 	// 读取连接中的参数信息（传输主体就是参数列表）, 并存放到req.argv.Interface()中
-	if err = cc.ReadBody(req.argv.Interface()); err != nil {
+	// 通过 cc.ReadBody() 将请求报文反序列化为第一个入参 argv
+	if err = cc.ReadBody(argvi); err != nil {
 		log.Println("rpc server: read argv err:", err)
 	}
 	return req, nil
@@ -134,13 +160,58 @@ func (server *Server) sendResponse(cc codec.Codec,
 	}
 }
 
-func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
-	// TODO: should call registered rpc methods to get the right replyv
-	// day 1, just print argv and send a hello message
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
+	//// day 1, just print argv and send a hello message
+	//defer wg.Done()
+	//
+	////log.Println(req.h, req.argv.Elem())
+	////req.replyv = reflect.ValueOf(fmt.Sprintf("geerpc resp %d", req.h.Seq))
+	//// ----fTODO: should call registered rpc methods to get the right replyv------
+	//err := req.svc.call(req.mtype, req.argv, req.replyv) // 方法调用
+	//if err != nil {
+	//	req.h.Error = err.Error()
+	//	server.sendResponse(cc, req.h, invalidRequest, sending)
+	//	return
+	//}
+	//// ----------------------------------------------------
+	//server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+
+	// **添加服务器超时处理**
+
 	defer wg.Done()
-	log.Println(req.h, req.argv.Elem())
-	req.replyv = reflect.ValueOf(fmt.Sprintf("geerpc resp %d", req.h.Seq))
-	server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+	// 需要确保 sendResponse 仅调用一次
+	// 这里的管道用作为信号机制（提示某一步完成，实际上没有数据被发送）
+	// 使用struct是因为struct{}是内存占用最小的数据类型
+	//since it contains literally nothing, so no allocation necessary
+	called := make(chan struct{})
+	sent := make(chan struct{})
+	go func() {
+		err := req.svc.call(req.mtype, req.argv, req.replyv)
+		called <- struct{}{}
+		if err != nil {
+			req.h.Error = err.Error()
+			server.sendResponse(cc, req.h, invalidRequest, sending)
+			sent <- struct{}{}
+			return
+		}
+		server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+		sent <- struct{}{}
+	}()
+
+	if timeout == 0 {
+		<-called // 等待子协程完成
+		<-sent
+		return
+	}
+	select {
+	//time.After() 先于 called 接收到消息，说明处理已经超时，called 和 sent 都将被阻塞。
+	//在 case <-time.After(timeout) 处调用 sendResponse。
+	case <-time.After(timeout): // 超时
+		req.h.Error = fmt.Sprintf("rpc server: request handle timeout: expect within %s", timeout)
+		server.sendResponse(cc, req.h, invalidRequest, sending)
+	case <-called: // called 信道接收到消息，代表处理（call函数）没有超时，继续执行 sendResponse。
+		<-sent
+	}
 }
 
 // Accept for 循环等待 socket 连接建立，并开启子协程处理，处理过程交给了 ServerConn 方法。
@@ -157,3 +228,53 @@ func (server *Server) Accept(lis net.Listener) {
 
 // Accept 接收并处理连接
 func Accept(lis net.Listener) { DefaultServer.Accept(lis) }
+
+/**
+通过反射结构体已经映射为服务，但请求的处理过程还没有完成。从接收到请求到回复还差以下几个步骤：
+第一步，根据入参类型，将请求的 body 反序列化；
+第二步，调用 service.call，完成方法调用；
+第三步，将 reply 序列化为字节流，构造响应报文，返回。
+*/
+
+// Register publishes in the server the set of methods of the
+// receiver value that satisfy the following conditions:
+//   - exported method of exported type
+//   - two arguments, both of exported type
+//   - the second argument is a pointer
+//   - one return value, of type error
+//
+// 将方法注册到server中的方法map中，如果存在则报错
+func (server *Server) Register(rcvr interface{}) error {
+	s := newService(rcvr)
+	// 多线程的情况下，同时操作map也是有风险的（因为会有插入操作）
+	// LoadOrStore: 如果键存在，则执行load，否则执行store. dup: 是否执行了load（此时键存在）
+	if _, dup := server.serviceMap.LoadOrStore(s.name, s); dup {
+		return errors.New("rpc: service already defined: " + s.name)
+	}
+	return nil
+}
+
+// Register publishes the receiver's methods in the DefaultServer.
+func Register(rcvr interface{}) error { return DefaultServer.Register(rcvr) }
+
+// 通过 ServiceMethod 从 serviceMap 中找到对应的 service
+// ServiceMethod 的构成是 “Service.Method”
+func (server *Server) findService(serviceMethod string) (svc *service, mtype *methodType, err error) {
+	dot := strings.LastIndex(serviceMethod, ".") // 子串在字符串中最后一次出现的位置
+	if dot < 0 {
+		err = errors.New("rpc server: service/method request ill-formed: " + serviceMethod)
+		return
+	}
+	serviceName, methodName := serviceMethod[:dot], serviceMethod[dot+1:]
+	svci, ok := server.serviceMap.Load(serviceName) // 传入键返回map中的值，返回service类型结构体
+	if !ok {
+		err = errors.New("rpc server: can't find service " + serviceName)
+		return
+	}
+	svc = svci.(*service) // 类型转换， type assertion
+	mtype = svc.method[methodName]
+	if mtype == nil {
+		err = errors.New("rpc server: can't find method " + methodName)
+	}
+	return
+}

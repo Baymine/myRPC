@@ -47,18 +47,20 @@ func (m *methodType) newReplyv() reflect.Value {
 }
 
 type service struct {
-	name   string                 // 映射的结构体的名称
-	typ    reflect.Type           // 结构体的类型
+	name string       // 映射的结构体的名称
+	typ  reflect.Type // 结构体的类型
+
+	// rcvr：receiver
 	rcvr   reflect.Value          // 结构体的实例本身，保留 rcvr 是因为在调用时需要 rcvr 作为第 0 个参数
 	method map[string]*methodType // 存储映射的结构体的所有符合条件的方法。
 }
 
-// 构造函数 rcvr：receiver
-func newService(rcvr interface{}) *service {
+// 构造函数,构造一个Service实例，传入的receiver用于获取类型
+func newService(receiver interface{}) *service {
 	s := new(service)
-	s.rcvr = reflect.ValueOf(rcvr)
+	s.rcvr = reflect.ValueOf(receiver)
 	s.name = reflect.Indirect(s.rcvr).Type().Name()
-	s.typ = reflect.TypeOf(rcvr)
+	s.typ = reflect.TypeOf(receiver)
 	if !ast.IsExported(s.name) { // 是否大写开头（是否可调用）
 		log.Fatalf("rpc server: %s is not a valid service name", s.name)
 	}
