@@ -25,7 +25,7 @@ func startServer(addr chan string) {
 }
 
 func TestClient_dialTimeout(t *testing.T) {
-	t.Parallel()
+	t.Parallel() // 并行测试？
 	l, _ := net.Listen("tcp", ":0")
 
 	f := func(conn net.Conn, opt *Option) (client *Client, err error) {
@@ -33,6 +33,10 @@ func TestClient_dialTimeout(t *testing.T) {
 		time.Sleep(time.Second * 2)
 		return nil, nil
 	}
+
+	// 子测试：可以在某个测试用例中，根据测试场景使用 t.Run创建不同的子测试用例
+	// 测试用的参数有且只有一个，在这里是 t *testing.T。
+	// 基准测试(benchmark)的参数是 *testing.B，TestMain 的参数是 *testing.M 类型。
 	t.Run("timeout", func(t *testing.T) {
 		_, err := dialTimeout(f, "tcp", l.Addr().String(), &Option{ConnectTimeout: time.Second})
 		_assert(err != nil && strings.Contains(err.Error(), "connect timeout"), "expect a timeout error")
