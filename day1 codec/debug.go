@@ -69,7 +69,7 @@ func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		})
 		return true
 	})
-	err := debug.Execute(w, services)
+	err := debug.Execute(w, services) // 将service解析然后写入w中
 	if err != nil {
 		_, _ = fmt.Fprintln(w, "rpc: error executing template:", err.Error())
 	}
