@@ -280,23 +280,31 @@ func (server *Server) findService(serviceMethod string) (svc *service, mtype *me
 	return
 }
 
-/**
+/*
+*
 day5 HTTP support
 */
+
 const (
 	connected        = "200 Connected to Gee RPC"
 	defaultRPCPath   = "/_geeprc_"
-	defaultDebugPath = "/debug/geerpc"
+	defaultDebugPath = "/debug/geerpc" // 为后续 DEBUG 页面预留的地址。
 )
 
-// ServeHTTP implements a http.Handler that answers RPC requests.
+// @Description: ServeHTTP implements a http.Handler that answers RPC requests.(转换HTTP报头适配RPC报头)
+// @receiver server
+// @param w： 用于构造针对该请求的响应
+// @param req：该对象包含该HTTP请求的所有信息
 func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "CONNECT" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed) // 设置状态码
 		_, _ = io.WriteString(w, "405 must CONNECT\n")
 		return
 	}
+	// 这是一段接管 HTTP 连接的代码，所谓的接管 HTTP 连接是指这里接管了 HTTP 的 Socket 连接，
+	//也就是说 Golang 的内置 HTTP 库和 HTTPServer 库将不会管理这个 Socket 连接的生命周期，
+	//这个生命周期已经划给 Hijacker 了（可用于实现一个不同的应用协议，指定HTTP的一些功能，如keep-alive）
 	conn, _, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		log.Print("rpc hijacking ", req.RemoteAddr, ": ", err.Error())
@@ -309,6 +317,7 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // HandleHTTP registers an HTTP handler for RPC messages on rpcPath,
 // and a debugging handler on debugPath.
 // It is still necessary to invoke http.Serve(), typically in a go statement.
+// 对于不同目录下的相应
 func (server *Server) HandleHTTP() {
 	http.Handle(defaultRPCPath, server)
 	http.Handle(defaultDebugPath, debugHTTP{server})
