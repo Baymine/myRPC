@@ -42,8 +42,8 @@ const debugText = `<html>
 // Templates are a mix of static text and “actions” enclosed in {{...}}
 //that are used to dynamically insert content. 可以看到debugText中的{{。。。}}
 
-// template.new(): allocates a new HTML template with the given name.
-
+// template.New(): allocates a new HTML template with the given name.
+// template.Must(): 包装器，封装错误处理，这里是变量初始化
 // 实际上就是一个动态文本，占位符({{..}})可以后续填上
 var debug = template.Must(template.New("RPC debug").Parse(debugText))
 
@@ -69,6 +69,8 @@ func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		})
 		return true
 	})
+	// The Execute function accepts an io.Writer for writing out the template and
+	// an interface{} to pass data into the template.
 	err := debug.Execute(w, services) // 将service解析然后写入w中
 	if err != nil {
 		_, _ = fmt.Fprintln(w, "rpc: error executing template:", err.Error())

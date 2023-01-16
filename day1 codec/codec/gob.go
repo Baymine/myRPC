@@ -24,7 +24,7 @@ type GobCodec struct {
 // 说明*GobCodec并没有实现Codec接口的所有方法
 var _ Codec = (*GobCodec)(nil)
 
-// CobType下的构造函数的实现
+// NewGobCodec CobType下的构造函数的实现
 func NewGobCodec(conn io.ReadWriteCloser) Codec {
 	buf := bufio.NewWriter(conn)
 	// 创建

@@ -317,7 +317,7 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // HandleHTTP registers an HTTP handler for RPC messages on rpcPath,
 // and a debugging handler on debugPath.
 // It is still necessary to invoke http.Serve(), typically in a go statement.
-// 对于不同目录下的相应
+// 对于不同目录下的响应
 func (server *Server) HandleHTTP() {
 	http.Handle(defaultRPCPath, server)
 	http.Handle(defaultDebugPath, debugHTTP{server})
