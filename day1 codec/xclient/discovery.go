@@ -55,6 +55,7 @@ func (d *MultiServersDiscovery) Update(servers []string) error {
 }
 
 // Get a server according to mode
+// 传入负载均衡的策略，执行相对应的负载均衡（随机和roundRobin）
 func (d *MultiServersDiscovery) Get(mode SelectMode) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -66,7 +67,7 @@ func (d *MultiServersDiscovery) Get(mode SelectMode) (string, error) {
 	case RandomSelect:
 		return d.servers[d.r.Intn(n)], nil
 	case RoundRobinSelect:
-		s := d.servers[d.index%n] // servers could be updated, so mode n to ensure safety
+		s := d.servers[d.index%n] // servers could be updated, so mode n to ensure safet	y
 		d.index = (d.index + 1) % n
 		return s, nil
 	default:
